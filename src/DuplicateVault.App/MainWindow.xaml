@@ -232,8 +232,8 @@
             <DataGrid Grid.Row="1" ItemsSource="{Binding DuplicateGroups}" SelectedItem="{Binding SelectedGroup}" AutoGenerateColumns="False" IsReadOnly="True">
               <DataGrid.Columns>
                 <DataGridTextColumn Header="File" Binding="{Binding Files.Count}" Width="70" />
-                <DataGridTextColumn Header="Dimensione" Binding="{Binding Length}" Width="110" />
-                <DataGridTextColumn Header="Recuperabile" Binding="{Binding ReclaimableBytes}" Width="120" />
+                <DataGridTextColumn Header="Dimensione" Binding="{Binding LengthText}" Width="110" />
+                <DataGridTextColumn Header="Recuperabile" Binding="{Binding ReclaimableText}" Width="120" />
                 <DataGridTextColumn Header="Hash" Binding="{Binding FullHash}" Width="*" />
               </DataGrid.Columns>
             </DataGrid>
@@ -248,8 +248,20 @@
             <TextBlock Text="File del gruppo" Foreground="{StaticResource Ink}" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,10" />
             <DataGrid Grid.Row="1" ItemsSource="{Binding SelectedFiles}" SelectedItem="{Binding SelectedFile}" AutoGenerateColumns="False" IsReadOnly="True">
               <DataGrid.Columns>
-                <DataGridCheckBoxColumn Header="Master" Binding="{Binding IsMasterCandidate}" Width="70" />
-                <DataGridCheckBoxColumn Header="Link" Binding="{Binding IsExistingHardLink}" Width="60" />
+                <DataGridTemplateColumn Header="Master" Width="70">
+                  <DataGridTemplateColumn.CellTemplate>
+                    <DataTemplate>
+                      <RadioButton IsChecked="{Binding IsMasterCandidate, Mode=OneWay}"
+                                   Command="{Binding DataContext.SetMasterCommand, RelativeSource={RelativeSource AncestorType=DataGrid}}"
+                                   CommandParameter="{Binding}"
+                                   HorizontalAlignment="Center" />
+                    </DataTemplate>
+                  </DataGridTemplateColumn.CellTemplate>
+                </DataGridTemplateColumn>
+                <DataGridCheckBoxColumn Header="Da collegare" Binding="{Binding IsPlannedLink, Mode=OneWay}" Width="105" />
+                <DataGridCheckBoxColumn Header="Già link" Binding="{Binding IsExistingHardLink, Mode=OneWay}" Width="75" />
+                <DataGridCheckBoxColumn Header="Disponibile" Binding="{Binding IsAvailable, Mode=OneWay}" Width="90" />
+                <DataGridTextColumn Header="Dimensione" Binding="{Binding LengthText}" Width="105" />
                 <DataGridTextColumn Header="Percorso" Binding="{Binding Record.FullPath}" Width="*" />
               </DataGrid.Columns>
             </DataGrid>

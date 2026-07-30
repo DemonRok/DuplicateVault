@@ -25,7 +25,15 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
             foreach (var root in request.Roots.Select(Path.GetFullPath))
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                foreach (var path in EnumerateFilesSafe(root, exclusionEngine, () => errors++))
+                if (!Directory.Exists(root))
+                {
+                    errors++;
+                    progress?.Report(Progress(root, "RootUnavailable"));
+                    continue;
+                }
+
+                progress?.Report(Progress(root, "OpeningRoot"));
+                foreach (var path in EnumerateFilesSafe(root, exclusionEngine, p => progress?.Report(Progress(p, "OpeningDirectory")), () => errors++))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     total++;
@@ -42,6 +50,7 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                 }
             }
 
+            progress?.Report(Progress(null, "Persisting"));
             await database.UpsertFilesAsync(records, cancellationToken);
 
             await CompleteDuplicateDetectionAsync(cancellationToken);
@@ -239,13 +248,14 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
         return new FileRecord(info.FullName, relative, info.Name, info.Extension, info.Length, info.CreationTimeUtc, info.LastWriteTimeUtc, info.Attributes, partial, full, Hashing.Algorithm, Hashing.PartialHashVersion, Hashing.FullHashVersion, identity?.StableId, identity?.NumberOfLinks ?? links, scanId, false, exclusionReason is not null, exclusionReason);
     }
 
-    private static IEnumerable<string> EnumerateFilesSafe(string root, ExclusionEngine exclusions, Action onError)
+    private static IEnumerable<string> EnumerateFilesSafe(string root, ExclusionEngine exclusions, Action<string> onDirectory, Action onError)
     {
         var pending = new Stack<string>();
         pending.Push(root);
         while (pending.Count > 0)
         {
             var current = pending.Pop();
+            onDirectory(current);
             IEnumerable<string> directories = [];
             IEnumerable<string> files = [];
             try

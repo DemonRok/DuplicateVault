@@ -105,7 +105,22 @@ public sealed record DuplicateGroup(
     IReadOnlyList<DuplicateFile> Files,
     long ReclaimableBytes)
 {
-    public string DisplayName => $"{Files.Count} files, {Length} bytes";
+    public string DisplayName => $"{Files.Count} files, {LengthText}";
+    public string LengthText => FormatBytes(Length);
+    public string ReclaimableText => FormatBytes(ReclaimableBytes);
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["byte", "KiB", "MiB", "GiB", "TiB"];
+        var value = (double)bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return unit == 0 ? $"{bytes:N0} {units[unit]}" : $"{value:N1} {units[unit]}";
+    }
 }
 
 public sealed record ScanResult(

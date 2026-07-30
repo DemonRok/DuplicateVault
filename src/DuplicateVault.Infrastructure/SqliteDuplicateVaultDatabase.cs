@@ -146,6 +146,36 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         return statuses;
     }
 
+    public async Task<IReadOnlyList<DuplicateGroup>> GetSavedDuplicateGroupsAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken)
+    {
+        var roots = rootPaths
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => Path.GetFullPath(r).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (roots.Length == 0) return [];
+
+        var records = new List<FileRecord>();
+        await using var connection = Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT * FROM FileRecord
+            WHERE IsExcluded=0 AND IsMissing=0 AND FullHash IS NOT NULL
+            ORDER BY Length DESC, FullHash, FullPath;
+            """;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var record = Read(reader);
+            if (roots.Any(root => record.FullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)))
+            {
+                records.Add(record);
+            }
+        }
+
+        return BuildGroups(records);
+    }
+
     public async Task RecordHardLinkOperationAsync(long scanId, string masterPath, string duplicatePath, HardLinkOperationResult result, CancellationToken cancellationToken)
     {
         await using var connection = Open();
@@ -226,6 +256,30 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
             state,
             lastScan,
             reader.GetInt64(reader.GetOrdinal("IncludedFiles")));
+    }
+
+    private static IReadOnlyList<DuplicateGroup> BuildGroups(IEnumerable<FileRecord> records)
+    {
+        var groups = new List<DuplicateGroup>();
+        foreach (var hashGroup in records.Where(r => r.FullHash is not null).GroupBy(r => new { r.Length, r.FullHash }))
+        {
+            var physical = hashGroup.GroupBy(r => r.FileId ?? r.FullPath).ToArray();
+            if (physical.Length < 2 && physical.All(g => g.Count() < 2)) continue;
+            var files = new List<DuplicateFile>();
+            var firstPhysical = true;
+            foreach (var physicalGroup in physical)
+            {
+                var isExistingLinkGroup = physicalGroup.Count() > 1;
+                foreach (var file in physicalGroup)
+                {
+                    files.Add(new(file, isExistingLinkGroup, firstPhysical));
+                }
+                firstPhysical = false;
+            }
+            var reclaimable = Math.Max(0, physical.Length - 1) * hashGroup.Key.Length;
+            groups.Add(new(hashGroup.Key.Length, hashGroup.Key.FullHash!, files, reclaimable));
+        }
+        return groups;
     }
 
     private static void Add(SqliteCommand command, FileRecord file)

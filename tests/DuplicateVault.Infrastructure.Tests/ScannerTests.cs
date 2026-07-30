@@ -30,6 +30,27 @@ public sealed class ScannerTests
     }
 
     [Fact]
+    public async Task GetSavedDuplicateGroupsAsync_ReturnsGroupsFromPreviousScan()
+    {
+        var root = NewDirectory();
+        var dataRoot = NewDirectory();
+        var content = new byte[1024 * 1024 + 16];
+        new Random(13).NextBytes(content);
+        await File.WriteAllBytesAsync(Path.Combine(root, "saved-a.bin"), content);
+        await File.WriteAllBytesAsync(Path.Combine(root, "saved-b.bin"), content);
+
+        var paths = new PortableDataRoot().Initialize(dataRoot);
+        var database = new SqliteDuplicateVaultDatabase(paths.DatabasePath);
+        var scanner = new FileScanner(database, new HardLinkService(), NullLogger<FileScanner>.Instance);
+
+        await scanner.ScanAsync(new ScanRequest([root], ScanMode.Quick, ServiceCollectionExtensions.DefaultProfile(), dataRoot), null, CancellationToken.None);
+        var saved = await database.GetSavedDuplicateGroupsAsync([root], CancellationToken.None);
+
+        Assert.Single(saved);
+        Assert.Equal(2, saved[0].Files.Count);
+    }
+
+    [Fact]
     public async Task ScanAsync_WhenCancelled_ReturnsPartialResultAndKeepsDatabase()
     {
         var root = NewDirectory();
