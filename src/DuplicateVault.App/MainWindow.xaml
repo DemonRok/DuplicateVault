@@ -117,7 +117,17 @@
                  BorderBrush="#28425F" BorderThickness="1" Padding="6">
           <ListBox.ItemTemplate>
             <DataTemplate>
-              <TextBlock Text="{Binding}" TextTrimming="CharacterEllipsis" Padding="6,5" />
+              <Grid Margin="0,3">
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="34" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding Symbol}" Foreground="#7DD3FC" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <StackPanel Grid.Column="1">
+                  <TextBlock Text="{Binding Path}" TextTrimming="CharacterEllipsis" Foreground="#E6F0FA" />
+                  <TextBlock Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" Foreground="#9FB4C9" FontSize="11" />
+                </StackPanel>
+              </Grid>
             </DataTemplate>
           </ListBox.ItemTemplate>
         </ListBox>
@@ -131,6 +141,7 @@
 
     <Grid Grid.Column="1" Margin="26">
       <Grid.RowDefinitions>
+        <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
         <RowDefinition Height="Auto" />
         <RowDefinition Height="*" />
@@ -149,32 +160,64 @@
         <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
           <Button Content="Configurazione" Command="{Binding SettingsCommand}" />
           <Button Content="Annulla" Command="{Binding CancelScanCommand}" Margin="8,0,0,0" />
+          <Button Content="Scansione pulita" Command="{Binding StartCleanScanCommand}" Margin="8,0,0,0" />
           <Button Content="Avvia scansione" Command="{Binding StartScanCommand}" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" />
         </StackPanel>
       </Grid>
 
-      <UniformGrid Grid.Row="1" Columns="3" Margin="0,22,0,22">
-        <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="0,0,12,0">
+      <UniformGrid Grid.Row="1" Columns="3" Margin="0,18,0,14">
+        <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,12,0">
           <StackPanel>
             <TextBlock Text="Gruppi duplicati" Foreground="{StaticResource Muted}" />
-            <TextBlock Text="{Binding GroupCountText}" Foreground="{StaticResource Ink}" FontSize="30" FontWeight="SemiBold" Margin="0,6,0,0" />
+            <TextBlock Text="{Binding GroupCountText}" Foreground="{StaticResource Ink}" FontSize="26" FontWeight="SemiBold" Margin="0,4,0,0" />
           </StackPanel>
         </Border>
-        <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="6,0,6,0">
+        <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="6,0,6,0">
           <StackPanel>
             <TextBlock Text="Spazio recuperabile" Foreground="{StaticResource Muted}" />
-            <TextBlock Text="{Binding ReclaimableText}" Foreground="{StaticResource PrimaryDark}" FontSize="30" FontWeight="SemiBold" Margin="0,6,0,0" />
+            <TextBlock Text="{Binding ReclaimableText}" Foreground="{StaticResource PrimaryDark}" FontSize="26" FontWeight="SemiBold" Margin="0,4,0,0" />
           </StackPanel>
         </Border>
-        <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="18" Margin="12,0,0,0">
+        <Border Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="12,0,0,0">
           <StackPanel>
             <TextBlock Text="File inclusi" Foreground="{StaticResource Muted}" />
-            <TextBlock Text="{Binding IncludedFilesText}" Foreground="{StaticResource Ink}" FontSize="30" FontWeight="SemiBold" Margin="0,6,0,0" />
+            <TextBlock Text="{Binding IncludedFilesText}" Foreground="{StaticResource Ink}" FontSize="26" FontWeight="SemiBold" Margin="0,4,0,0" />
           </StackPanel>
         </Border>
       </UniformGrid>
 
-      <Grid Grid.Row="2">
+      <Border Grid.Row="2" Background="{StaticResource Panel}" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,0,0,14">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="Auto" />
+          </Grid.RowDefinitions>
+          <Grid>
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="Auto" />
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="{Binding ProgressActivity}" Foreground="{StaticResource Ink}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+            <Border Grid.Column="1" Background="#E6F7FB" CornerRadius="6" Padding="10,3" Margin="16,0,0,0" MinWidth="58">
+              <TextBlock Text="{Binding ProgressPercentText}" Foreground="{StaticResource PrimaryDark}" FontWeight="SemiBold" TextAlignment="Center" />
+            </Border>
+          </Grid>
+          <Border Grid.Row="1" Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="6" Padding="9" Margin="0,9,0,9">
+            <TextBlock Text="{Binding ProgressPath}" Foreground="{StaticResource Muted}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
+          </Border>
+          <Grid Grid.Row="2">
+            <Grid.ColumnDefinitions>
+              <ColumnDefinition Width="*" />
+              <ColumnDefinition Width="520" />
+            </Grid.ColumnDefinitions>
+            <ProgressBar Height="16" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" IsIndeterminate="{Binding IsProgressIndeterminate}" />
+            <TextBlock Grid.Column="1" Text="{Binding ProgressCounters}" Foreground="{StaticResource Muted}" TextAlignment="Right" VerticalAlignment="Center" />
+          </Grid>
+        </Grid>
+      </Border>
+
+      <Grid Grid.Row="3">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="2*" />
           <ColumnDefinition Width="3*" />
@@ -214,7 +257,7 @@
         </Border>
       </Grid>
 
-      <Border Grid.Row="3" Background="#EAF1F8" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,18,0,0">
+      <Border Grid.Row="4" Background="#EAF1F8" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="14" Margin="0,18,0,0">
         <DockPanel>
           <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
             <Button Content="Dry run" Command="{Binding DryRunCommand}" />

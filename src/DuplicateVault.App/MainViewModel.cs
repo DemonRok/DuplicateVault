@@ -15,11 +15,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly IFileScanner _scanner;
     private readonly IHardLinkService _hardLinks;
     private readonly AppPaths _paths;
+    private readonly IDuplicateVaultDatabase _database;
     private readonly GuiSettingsStore _settingsStore;
     private readonly RelayCommand _addRootCommand;
     private readonly RelayCommand _removeRootCommand;
     private readonly RelayCommand _settingsCommand;
     private readonly RelayCommand _startScanCommand;
+    private readonly RelayCommand _startCleanScanCommand;
     private readonly RelayCommand _cancelScanCommand;
     private readonly RelayCommand _dryRunCommand;
     private readonly RelayCommand _executeHardLinkCommand;
@@ -27,19 +29,27 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private GuiSettings _settings;
     private DuplicateGroup? _selectedGroup;
     private DuplicateFile? _selectedFile;
-    private string? _selectedRoot;
+    private ScanRootItem? _selectedRoot;
     private string _status = "Pronto";
     private string _summary = "";
     private string _groupCountText = "0";
     private string _reclaimableText = "0 byte";
     private string _includedFilesText = "0";
+    private string _progressActivity = "Nessuna scansione in corso";
+    private string _progressPath = "-";
+    private string _progressCounters = "0 file letti, 0 inclusi, 0 hash";
+    private string _progressPercentText = "";
+    private double _progressPercent;
+    private bool _isProgressIndeterminate;
     private bool _isScanning;
+    private bool _isCancellationRequested;
 
-    public MainViewModel(IFileScanner scanner, IHardLinkService hardLinks, AppPaths paths, GuiSettingsStore settingsStore)
+    public MainViewModel(IFileScanner scanner, IHardLinkService hardLinks, AppPaths paths, GuiSettingsStore settingsStore, IDuplicateVaultDatabase database)
     {
         _scanner = scanner;
         _hardLinks = hardLinks;
         _paths = paths;
+        _database = database;
         _settingsStore = settingsStore;
         _settings = _settingsStore.Load();
         SelectedMode = _settings.ScanMode;
@@ -48,7 +58,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         {
             foreach (var root in _settings.ScanRoots.Where(Directory.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
             {
-                Roots.Add(root);
+                Roots.Add(new ScanRootItem(root));
             }
         }
 
@@ -56,17 +66,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _removeRootCommand = new RelayCommand(_ => RemoveRoot(), _ => !IsScanning && SelectedRoot is not null);
         _settingsCommand = new RelayCommand(_ => OpenSettings(), _ => !IsScanning);
         _startScanCommand = new RelayCommand(async _ => await StartScanAsync(), _ => !IsScanning && Roots.Count > 0);
-        _cancelScanCommand = new RelayCommand(_ => _scanCts?.Cancel(), _ => IsScanning);
+        _startCleanScanCommand = new RelayCommand(async _ => await StartScanAsync(ignoreCache: true), _ => !IsScanning && Roots.Count > 0);
+        _cancelScanCommand = new RelayCommand(_ => CancelScan(), _ => IsScanning && !IsCancellationRequested);
         _dryRunCommand = new RelayCommand(async _ => await ReplaceAsync(true), _ => !IsScanning && SelectedGroup is not null && SelectedFile is not null);
         _executeHardLinkCommand = new RelayCommand(async _ => await ReplaceAsync(false), _ => !IsScanning && SelectedGroup is not null && SelectedFile is not null);
+        _ = RefreshRootStatusesAsync();
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
-    public ObservableCollection<string> Roots { get; } = [];
+    public ObservableCollection<ScanRootItem> Roots { get; } = [];
     public ObservableCollection<DuplicateGroup> DuplicateGroups { get; } = [];
     public IReadOnlyList<string> Modes { get; } = ["Quick", "Full", "Strict"];
     public string RootPath { get; set; } = "";
-    public string? SelectedRoot
+    public ScanRootItem? SelectedRoot
     {
         get => _selectedRoot;
         set { _selectedRoot = value; OnPropertyChanged(); RefreshCommands(); }
@@ -79,6 +91,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ICommand RemoveRootCommand => _removeRootCommand;
     public ICommand SettingsCommand => _settingsCommand;
     public ICommand StartScanCommand => _startScanCommand;
+    public ICommand StartCleanScanCommand => _startCleanScanCommand;
     public ICommand CancelScanCommand => _cancelScanCommand;
     public ICommand DryRunCommand => _dryRunCommand;
     public ICommand ExecuteHardLinkCommand => _executeHardLinkCommand;
@@ -87,6 +100,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         get => _isScanning;
         set { _isScanning = value; OnPropertyChanged(); RefreshCommands(); }
+    }
+
+    public bool IsCancellationRequested
+    {
+        get => _isCancellationRequested;
+        set { _isCancellationRequested = value; OnPropertyChanged(); RefreshCommands(); }
     }
 
     public DuplicateGroup? SelectedGroup
@@ -133,6 +152,42 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set { _includedFilesText = value; OnPropertyChanged(); }
     }
 
+    public string ProgressActivity
+    {
+        get => _progressActivity;
+        set { _progressActivity = value; OnPropertyChanged(); }
+    }
+
+    public string ProgressPath
+    {
+        get => _progressPath;
+        set { _progressPath = value; OnPropertyChanged(); }
+    }
+
+    public string ProgressCounters
+    {
+        get => _progressCounters;
+        set { _progressCounters = value; OnPropertyChanged(); }
+    }
+
+    public string ProgressPercentText
+    {
+        get => _progressPercentText;
+        set { _progressPercentText = value; OnPropertyChanged(); }
+    }
+
+    public double ProgressPercent
+    {
+        get => _progressPercent;
+        set { _progressPercent = value; OnPropertyChanged(); }
+    }
+
+    public bool IsProgressIndeterminate
+    {
+        get => _isProgressIndeterminate;
+        set { _isProgressIndeterminate = value; OnPropertyChanged(); }
+    }
+
     private void AddRoot()
     {
         var dialog = new OpenFolderDialog
@@ -171,7 +226,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         var updated = dialog.Settings;
         _settings = dialog.Settings with
         {
-            ScanRoots = updated.RememberScanRoots ? Roots.ToList() : []
+            ScanRoots = updated.RememberScanRoots ? Roots.Select(r => r.Path).ToList() : []
         };
         SelectedMode = _settings.ScanMode;
         MinimumSizeText = _settings.MinimumSizeText;
@@ -181,7 +236,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         Status = "Configurazione salvata.";
     }
 
-    private async Task StartScanAsync()
+    private async Task StartScanAsync(bool ignoreCache = false)
     {
         if (IsScanning)
         {
@@ -196,28 +251,32 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
         DuplicateGroups.Clear();
         _scanCts = new CancellationTokenSource();
-        var mode = Enum.Parse<ScanMode>(SelectedMode);
+        IsCancellationRequested = false;
+        var mode = ignoreCache ? ScanMode.Full : Enum.Parse<ScanMode>(SelectedMode);
         var min = SizeParser.Parse(MinimumSizeText);
         var profile = ServiceCollectionExtensions.DefaultProfile(min, mode == ScanMode.Strict);
-        var roots = Roots.ToArray();
+        var roots = Roots.Select(r => r.Path).ToArray();
         var lastProgressUtc = DateTime.MinValue;
         var progress = new Progress<ScanProgress>(p =>
         {
             var now = DateTime.UtcNow;
-            if (p.Message != "Completed" && (now - lastProgressUtc).TotalMilliseconds < 250)
+            if (p.Percent is null && p.Message is not ("Completed" or "Cancelled") && (now - lastProgressUtc).TotalMilliseconds < 250)
             {
                 return;
             }
 
             lastProgressUtc = now;
-            Status = $"{TranslateProgress(p.Message)}: {p.EnumeratedFiles:N0} file, {p.IncludedFiles:N0} inclusi, {p.HashedFiles:N0} hash";
+            var translated = TranslateProgress(p.Message);
+            Status = $"{translated}: {p.EnumeratedFiles:N0} file, {p.IncludedFiles:N0} inclusi, {p.HashedFiles:N0} hash";
             IncludedFilesText = p.IncludedFiles.ToString("N0");
+            UpdateMainProgress(p, translated);
         });
 
         try
         {
             IsScanning = true;
-            Status = "Scansione avviata...";
+            Status = ignoreCache ? "Scansione pulita avviata..." : "Scansione avviata...";
+            UpdateMainProgress(new ScanProgress(0, 0, 0, null, "Enumerating"), "Enumerazione");
             var request = new ScanRequest(roots, mode, profile, _paths.DataRoot);
             var token = _scanCts.Token;
             var result = await Task.Run(() => _scanner.ScanAsync(request, progress, token), token);
@@ -228,10 +287,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             ReclaimableText = FormatBytes(result.ReclaimableBytes);
             IncludedFilesText = result.IncludedFiles.ToString("N0");
             Status = result.WasCancelled ? "Scansione annullata. I dati raccolti sono stati salvati." : "Scansione completata.";
+            IsProgressIndeterminate = false;
+            ProgressPercent = 100;
+            ProgressPercentText = "100%";
+            await RefreshRootStatusesAsync();
         }
         catch (OperationCanceledException)
         {
             Status = "Scansione annullata.";
+            IsProgressIndeterminate = false;
         }
         catch (Exception ex)
         {
@@ -241,9 +305,20 @@ public sealed class MainViewModel : INotifyPropertyChanged
         finally
         {
             IsScanning = false;
+            IsCancellationRequested = false;
             _scanCts.Dispose();
             _scanCts = null;
         }
+    }
+
+    private void CancelScan()
+    {
+        if (_scanCts is null || IsCancellationRequested) return;
+        IsCancellationRequested = true;
+        Status = "Annullamento richiesto. Preparero i risultati parziali appena possibile.";
+        ProgressActivity = "Annullamento richiesto";
+        ProgressPath = "Interrompo la lettura di nuovi file e preparo i risultati gia raccolti.";
+        _scanCts.Cancel();
     }
 
     private async Task ReplaceAsync(bool dryRun)
@@ -280,12 +355,14 @@ public sealed class MainViewModel : INotifyPropertyChanged
             return;
         }
 
-        if (!Roots.Contains(fullPath))
+        if (Roots.All(r => !string.Equals(r.Path, fullPath, StringComparison.OrdinalIgnoreCase)))
         {
-            Roots.Add(fullPath);
-            SelectedRoot = fullPath;
+            var item = new ScanRootItem(fullPath);
+            Roots.Add(item);
+            SelectedRoot = item;
             OnPropertyChanged(nameof(SelectedRoot));
             Status = "Cartella aggiunta.";
+            _ = RefreshRootStatusAsync(item);
             SaveSettings();
             RefreshCommands();
         }
@@ -295,7 +372,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         _settings = _settings with
         {
-            ScanRoots = _settings.RememberScanRoots ? Roots.ToList() : []
+            ScanRoots = _settings.RememberScanRoots ? Roots.Select(r => r.Path).ToList() : []
         };
         _settingsStore.Save(_settings);
     }
@@ -306,9 +383,57 @@ public sealed class MainViewModel : INotifyPropertyChanged
         _removeRootCommand.RaiseCanExecuteChanged();
         _settingsCommand.RaiseCanExecuteChanged();
         _startScanCommand.RaiseCanExecuteChanged();
+        _startCleanScanCommand.RaiseCanExecuteChanged();
         _cancelScanCommand.RaiseCanExecuteChanged();
         _dryRunCommand.RaiseCanExecuteChanged();
         _executeHardLinkCommand.RaiseCanExecuteChanged();
+    }
+
+    private async Task RefreshRootStatusesAsync()
+    {
+        foreach (var root in Roots)
+        {
+            await RefreshRootStatusAsync(root);
+        }
+    }
+
+    private async Task RefreshRootStatusAsync(ScanRootItem item)
+    {
+        try
+        {
+            item.Apply(await _database.GetScanRootStatusAsync(item.Path, CancellationToken.None));
+        }
+        catch
+        {
+            item.Apply(new ScanRootStatus(item.Path, ScanRootState.Unknown, null, 0));
+        }
+    }
+
+    private void UpdateMainProgress(ScanProgress progress, string translatedMessage)
+    {
+        ProgressActivity = progress.Message switch
+        {
+            "ReusingPartialHash" => "Riutilizzo hash parziali salvati",
+            "CalculatingPartialHash" => "Calcolo hash parziali",
+            "ReusingFullHash" => "Riutilizzo hash completi salvati",
+            "Hashing" => "Calcolo hash completi",
+            "InspectingFileIdentity" => "Verifica hard link esistenti",
+            "Persisting" => "Salvataggio risultati",
+            _ => translatedMessage
+        };
+        ProgressPath = progress.CurrentPath ?? "Finalizzazione dei dati raccolti...";
+        ProgressCounters = $"{progress.EnumeratedFiles:N0} letti, {progress.IncludedFiles:N0} inclusi, {progress.PartialHashes:N0} parziali, {progress.FullHashes:N0} completi, {progress.ReusedHashes:N0} riusati";
+        if (progress.Percent is { } percent)
+        {
+            IsProgressIndeterminate = false;
+            ProgressPercent = Math.Clamp(percent, 0, 100);
+            ProgressPercentText = $"{ProgressPercent:N0}%";
+        }
+        else
+        {
+            IsProgressIndeterminate = true;
+            ProgressPercentText = "";
+        }
     }
 
     private static string FormatBytes(long bytes)
@@ -327,11 +452,55 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private static string TranslateProgress(string message) => message switch
     {
         "Enumerating" => "Enumerazione",
+        "ReusingPartialHash" => "Riutilizzo hash parziali salvati",
+        "CalculatingPartialHash" => "Calcolo hash parziali",
+        "ReusingFullHash" => "Riutilizzo hash completi salvati",
         "Hashing" => "Calcolo hash",
+        "InspectingFileIdentity" => "Verifica hard link esistenti",
+        "Persisting" => "Salvataggio risultati",
+        "Finalizing" => "Preparazione risultati parziali",
         "Completed" => "Completata",
         "Cancelled" => "Annullata",
         _ => message
     };
+}
+
+public sealed class ScanRootItem(string path) : INotifyPropertyChanged
+{
+    private ScanRootState _state = ScanRootState.Unknown;
+    private DateTime? _lastScanUtc;
+    private long _includedFiles;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    public string Path { get; } = path;
+
+    public string Symbol => _state switch
+    {
+        ScanRootState.Complete => "[OK]",
+        ScanRootState.Partial => "[~]",
+        _ => "[ ]"
+    };
+
+    public string StatusText => _state switch
+    {
+        ScanRootState.Complete => $"Scansione completa, {_includedFiles:N0} file inclusi",
+        ScanRootState.Partial => $"Scansione parziale, {_includedFiles:N0} file inclusi",
+        _ => "Mai scansionata"
+    };
+
+    public string LastScanText => _lastScanUtc is null ? "" : _lastScanUtc.Value.ToLocalTime().ToString("g");
+
+    public void Apply(ScanRootStatus status)
+    {
+        _state = status.State;
+        _lastScanUtc = status.LastScanUtc;
+        _includedFiles = status.IncludedFiles;
+        OnPropertyChanged(nameof(Symbol));
+        OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(LastScanText));
+    }
+
+    private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
 
 public sealed class RelayCommand(Action<object?> execute, Predicate<object?>? canExecute = null) : ICommand

@@ -35,6 +35,8 @@ public interface IDuplicateVaultDatabase
     Task<FileRecord?> FindReusableHashAsync(FileRecord metadata, CancellationToken cancellationToken);
     Task<IReadOnlyList<FileRecord>> GetDuplicateCandidatesAsync(long scanId, CancellationToken cancellationToken);
     Task CompleteScanAsync(long scanId, ScanResult result, CancellationToken cancellationToken);
+    Task<ScanRootStatus> GetScanRootStatusAsync(string rootPath, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ScanRootStatus>> GetScanRootStatusesAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken);
     Task RecordHardLinkOperationAsync(long scanId, string masterPath, string duplicatePath, HardLinkOperationResult result, CancellationToken cancellationToken);
     Task<IReadOnlyList<HardLinkPlanItem>> GetLatestPlanAsync(CancellationToken cancellationToken);
     string DatabasePath { get; }

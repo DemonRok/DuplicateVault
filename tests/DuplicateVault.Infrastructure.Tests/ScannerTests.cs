@@ -49,6 +49,35 @@ public sealed class ScannerTests
 
         Assert.True(result.WasCancelled);
         Assert.True(File.Exists(paths.DatabasePath));
+        var status = await database.GetScanRootStatusAsync(root, CancellationToken.None);
+        Assert.Equal(ScanRootState.Partial, status.State);
+    }
+
+    [Fact]
+    public async Task ScanAsync_WhenCancelled_FinalizesDuplicatesFromEnumeratedFiles()
+    {
+        var root = NewDirectory();
+        var dataRoot = NewDirectory();
+        var content = new byte[1024 * 1024 + 32];
+        new Random(11).NextBytes(content);
+        await File.WriteAllBytesAsync(Path.Combine(root, "duplicate-a.bin"), content);
+        await File.WriteAllBytesAsync(Path.Combine(root, "duplicate-b.bin"), content);
+        await File.WriteAllTextAsync(Path.Combine(root, "tail.txt"), "tail");
+
+        var paths = new PortableDataRoot().Initialize(dataRoot);
+        var database = new SqliteDuplicateVaultDatabase(paths.DatabasePath);
+        var scanner = new FileScanner(database, new HardLinkService(), NullLogger<FileScanner>.Instance);
+        using var cts = new CancellationTokenSource();
+        var progress = new Progress<ScanProgress>(p =>
+        {
+            if (p.Message == "Enumerating" && p.EnumeratedFiles >= 2) cts.Cancel();
+        });
+
+        var result = await scanner.ScanAsync(new ScanRequest([root], ScanMode.Quick, ServiceCollectionExtensions.DefaultProfile(1), dataRoot), progress, cts.Token);
+
+        Assert.True(result.WasCancelled);
+        Assert.NotEmpty(result.DuplicateGroups);
+        Assert.True(result.ReclaimableBytes > 0);
     }
 
     private static string NewDirectory()

@@ -6,6 +6,7 @@ namespace DuplicateVault.Infrastructure;
 public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplicateVaultDatabase
 {
     public string DatabasePath { get; } = databasePath;
+    private readonly Dictionary<long, ScanRequest> _scanRequests = [];
 
     public async Task InitializeAsync(CancellationToken cancellationToken)
     {
@@ -24,7 +25,9 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         command.Parameters.AddWithValue("$started", DateTime.UtcNow.ToString("O"));
         command.Parameters.AddWithValue("$mode", request.Mode.ToString());
         command.Parameters.AddWithValue("$version", ThisAssembly.Version);
-        return (long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+        var scanId = (long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+        _scanRequests[scanId] = request;
+        return scanId;
     }
 
     public async Task UpsertFilesAsync(IReadOnlyList<FileRecord> files, CancellationToken cancellationToken)
@@ -53,7 +56,8 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         command.CommandText = """
             SELECT * FROM FileRecord
             WHERE FullPath=$full AND Length=$len AND LastWriteTimeUtc=$written AND FileAttributes=$attrs
-              AND IFNULL(FileId,'')=IFNULL($fileid,'') AND PartialHashVersion=$phv AND FullHashVersion=$fhv
+              AND ($fileid IS NULL OR IFNULL(FileId,'')=IFNULL($fileid,''))
+              AND PartialHashVersion=$phv AND FullHashVersion=$fhv
             LIMIT 1;
             """;
         command.Parameters.AddWithValue("$full", metadata.FullPath);
@@ -107,6 +111,39 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         command.Parameters.AddWithValue("$cancelled", result.WasCancelled ? 1 : 0);
         command.Parameters.AddWithValue("$id", scanId);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        if (_scanRequests.TryGetValue(scanId, out var request))
+        {
+            foreach (var root in request.Roots)
+            {
+                await UpsertRootStatusAsync(connection, Path.GetFullPath(root), result, cancellationToken);
+            }
+            _scanRequests.Remove(scanId);
+        }
+    }
+
+    public async Task<ScanRootStatus> GetScanRootStatusAsync(string rootPath, CancellationToken cancellationToken)
+    {
+        await using var connection = Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT RootPath,State,LastScanUtc,IncludedFiles FROM ScanRootStatus WHERE RootPath=$root LIMIT 1;";
+        command.Parameters.AddWithValue("$root", Path.GetFullPath(rootPath));
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return new(Path.GetFullPath(rootPath), ScanRootState.Unknown, null, 0);
+        }
+
+        return ReadRootStatus(reader);
+    }
+
+    public async Task<IReadOnlyList<ScanRootStatus>> GetScanRootStatusesAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken)
+    {
+        var statuses = new List<ScanRootStatus>();
+        foreach (var root in rootPaths)
+        {
+            statuses.Add(await GetScanRootStatusAsync(root, cancellationToken));
+        }
+        return statuses;
     }
 
     public async Task RecordHardLinkOperationAsync(long scanId, string masterPath, string duplicatePath, HardLinkOperationResult result, CancellationToken cancellationToken)
@@ -162,6 +199,33 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task UpsertRootStatusAsync(SqliteConnection connection, string rootPath, ScanResult result, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = """
+            INSERT INTO ScanRootStatus(RootPath,State,LastScanUtc,IncludedFiles)
+            VALUES($root,$state,$last,$included)
+            ON CONFLICT(RootPath) DO UPDATE SET State=$state,LastScanUtc=$last,IncludedFiles=$included;
+            """;
+        command.Parameters.AddWithValue("$root", rootPath);
+        command.Parameters.AddWithValue("$state", result.WasCancelled ? ScanRootState.Partial.ToString() : ScanRootState.Complete.ToString());
+        command.Parameters.AddWithValue("$last", DateTime.UtcNow.ToString("O"));
+        command.Parameters.AddWithValue("$included", result.IncludedFiles);
+        await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static ScanRootStatus ReadRootStatus(SqliteDataReader reader)
+    {
+        var stateText = reader.GetString(reader.GetOrdinal("State"));
+        var state = Enum.TryParse<ScanRootState>(stateText, out var parsed) ? parsed : ScanRootState.Unknown;
+        DateTime? lastScan = reader.IsDBNull(reader.GetOrdinal("LastScanUtc")) ? null : DateTime.Parse(reader.GetString(reader.GetOrdinal("LastScanUtc"))).ToUniversalTime();
+        return new(
+            reader.GetString(reader.GetOrdinal("RootPath")),
+            state,
+            lastScan,
+            reader.GetInt64(reader.GetOrdinal("IncludedFiles")));
     }
 
     private static void Add(SqliteCommand command, FileRecord file)
@@ -227,6 +291,8 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
           Id INTEGER PRIMARY KEY AUTOINCREMENT, ScanSessionId INTEGER NOT NULL, GroupId INTEGER, MasterPath TEXT NOT NULL, DuplicatePath TEXT NOT NULL,
           MasterFileIdBefore TEXT, DuplicateFileIdBefore TEXT, ResultingFileId TEXT, StartedUtc TEXT NOT NULL, CompletedUtc TEXT, Status TEXT NOT NULL,
           RollbackPerformed INTEGER NOT NULL, ErrorCode INTEGER, ErrorMessage TEXT, ApplicationVersion TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS ScanRootStatus(
+          RootPath TEXT PRIMARY KEY, State TEXT NOT NULL, LastScanUtc TEXT, IncludedFiles INTEGER NOT NULL DEFAULT 0);
         CREATE INDEX IF NOT EXISTS IX_FileRecord_FullPath ON FileRecord(FullPath);
         CREATE INDEX IF NOT EXISTS IX_FileRecord_RelativePath ON FileRecord(RelativePath);
         CREATE INDEX IF NOT EXISTS IX_FileRecord_Length ON FileRecord(Length);

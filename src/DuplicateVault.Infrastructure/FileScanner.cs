@@ -29,7 +29,7 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     total++;
-                    progress?.Report(new(total, included, fullCalculated, path, "Enumerating"));
+                    progress?.Report(Progress(path, "Enumerating"));
                     var info = new FileInfo(path);
                     var excluded = IsExcluded(info, request.Profile, exclusionEngine, out var reason);
                     if (excluded)
@@ -38,74 +38,123 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                         continue;
                     }
                     included++;
-                    records.Add(Metadata(root, info, scanId, null, null, await TryIdentityAsync(path, cancellationToken), 1, null));
+                    records.Add(Metadata(root, info, scanId, null, null, null, 1, null));
                 }
             }
 
             await database.UpsertFilesAsync(records, cancellationToken);
 
-            var bySize = records.Where(r => !r.IsExcluded).GroupBy(r => r.Length).Where(g => g.Count() > 1);
-            foreach (var group in bySize)
-            {
-                foreach (var record in group)
-                {
-                    var reusable = request.Mode == ScanMode.Quick ? await database.FindReusableHashAsync(record, cancellationToken) : null;
-                    if (reusable?.PartialHash is not null)
-                    {
-                        cached++;
-                        withPartial.Add(record with { PartialHash = reusable.PartialHash, FullHash = reusable.FullHash });
-                        continue;
-                    }
-                    try
-                    {
-                        var partial = await Hashing.ComputePartialHashAsync(record.FullPath, record.Length, cancellationToken);
-                        partialCalculated++;
-                        withPartial.Add(record with { PartialHash = partial });
-                    }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        logger?.LogWarning(ex, "Failed to calculate partial hash for {Path}", record.FullPath);
-                    }
-                }
-            }
-
-            foreach (var group in withPartial.GroupBy(r => new { r.Length, r.PartialHash }).Where(g => g.Count() > 1))
-            {
-                foreach (var record in group)
-                {
-                    var reusable = request.Mode == ScanMode.Quick ? await database.FindReusableHashAsync(record, cancellationToken) : null;
-                    if (reusable?.FullHash is not null)
-                    {
-                        cached++;
-                        withFull.Add(record with { PartialHash = reusable.PartialHash, FullHash = reusable.FullHash });
-                        continue;
-                    }
-                    try
-                    {
-                        var full = await Hashing.ComputeFullHashAsync(record.FullPath, cancellationToken);
-                        fullCalculated++;
-                        progress?.Report(new(total, included, fullCalculated, record.FullPath, "Hashing"));
-                        withFull.Add(record with { FullHash = full });
-                    }
-                    catch (Exception ex)
-                    {
-                        errors++;
-                        logger?.LogWarning(ex, "Failed to calculate full hash for {Path}", record.FullPath);
-                    }
-                }
-            }
-
+            await CompleteDuplicateDetectionAsync(cancellationToken);
             var result = await PersistAndCompleteAsync(false, cancellationToken);
-            progress?.Report(new(total, included, fullCalculated, null, "Completed"));
+            progress?.Report(Progress(null, "Completed"));
             return result;
         }
         catch (OperationCanceledException)
         {
+            progress?.Report(Progress(null, "Finalizing"));
+            await CompleteDuplicateDetectionAsync(CancellationToken.None);
             var result = await PersistAndCompleteAsync(true, CancellationToken.None);
-            progress?.Report(new(total, included, fullCalculated, null, "Cancelled"));
+            progress?.Report(Progress(null, "Cancelled"));
             return result;
         }
+
+        async Task CompleteDuplicateDetectionAsync(CancellationToken token)
+        {
+            var partialPaths = withPartial.Select(r => r.FullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var fullPaths = withFull.Select(r => r.FullPath).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+            var bySize = records.Where(r => !r.IsExcluded).GroupBy(r => r.Length).Where(g => g.Count() > 1).ToArray();
+            var partialWork = bySize.Sum(g => g.Count(r => !partialPaths.Contains(r.FullPath)));
+            var fullWorkEstimate = bySize.Sum(g => g.Count());
+            var totalWork = Math.Max(1, partialWork + fullWorkEstimate);
+            var completedWork = 0;
+            foreach (var group in bySize)
+            {
+                foreach (var record in group)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (partialPaths.Contains(record.FullPath)) continue;
+                    ReportProgress("ReusingPartialHash", record.FullPath, completedWork, totalWork);
+                    var reusable = request.Mode == ScanMode.Quick ? await database.FindReusableHashAsync(record, token) : null;
+                    if (reusable?.PartialHash is not null)
+                    {
+                        cached++;
+                        withPartial.Add(record with { PartialHash = reusable.PartialHash, FullHash = reusable.FullHash });
+                        partialPaths.Add(record.FullPath);
+                        completedWork++;
+                        ReportProgress("ReusingPartialHash", record.FullPath, completedWork, totalWork);
+                        continue;
+                    }
+                    try
+                    {
+                        ReportProgress("CalculatingPartialHash", record.FullPath, completedWork, totalWork);
+                        var partial = await Hashing.ComputePartialHashAsync(record.FullPath, record.Length, token);
+                        partialCalculated++;
+                        withPartial.Add(record with { PartialHash = partial });
+                        partialPaths.Add(record.FullPath);
+                        completedWork++;
+                        ReportProgress("CalculatingPartialHash", record.FullPath, completedWork, totalWork);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        errors++;
+                        logger?.LogWarning(ex, "Failed to calculate partial hash for {Path}", record.FullPath);
+                        completedWork++;
+                    }
+                }
+            }
+
+            var fullGroups = withPartial.GroupBy(r => new { r.Length, r.PartialHash }).Where(g => g.Count() > 1).ToArray();
+            var remainingFullWork = fullGroups.Sum(g => g.Count(r => !fullPaths.Contains(r.FullPath)));
+            totalWork = Math.Max(completedWork + remainingFullWork, totalWork);
+            foreach (var group in fullGroups)
+            {
+                foreach (var record in group)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (fullPaths.Contains(record.FullPath)) continue;
+                    ReportProgress("ReusingFullHash", record.FullPath, completedWork, totalWork);
+                    var reusable = request.Mode == ScanMode.Quick ? await database.FindReusableHashAsync(record, token) : null;
+                    if (reusable?.FullHash is not null)
+                    {
+                        cached++;
+                        withFull.Add(record with { PartialHash = reusable.PartialHash, FullHash = reusable.FullHash });
+                        fullPaths.Add(record.FullPath);
+                        completedWork++;
+                        ReportProgress("ReusingFullHash", record.FullPath, completedWork, totalWork);
+                        continue;
+                    }
+                    try
+                    {
+                        ReportProgress("Hashing", record.FullPath, completedWork, totalWork);
+                        var full = await Hashing.ComputeFullHashAsync(record.FullPath, token);
+                        fullCalculated++;
+                        withFull.Add(record with { FullHash = full });
+                        fullPaths.Add(record.FullPath);
+                        completedWork++;
+                        ReportProgress("Hashing", record.FullPath, completedWork, totalWork);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        errors++;
+                        logger?.LogWarning(ex, "Failed to calculate full hash for {Path}", record.FullPath);
+                        completedWork++;
+                    }
+                }
+            }
+
+            ReportProgress("InspectingFileIdentity", null, totalWork, totalWork);
+            withFull = await AddIdentitiesToDuplicateCandidatesAsync(withFull, token);
+        }
+
+        void ReportProgress(string message, string? path, int completedWork, int totalWork)
+        {
+            progress?.Report(Progress(path, message, Percent(completedWork, totalWork)));
+        }
+
+        static double Percent(int completedWork, int totalWork) => totalWork <= 0 ? 100 : Math.Clamp(completedWork * 100.0 / totalWork, 0, 100);
+        long HashProgress() => partialCalculated + fullCalculated + cached;
+        ScanProgress Progress(string? path, string message, double? percent = null) => new(total, included, HashProgress(), path, message, percent, partialCalculated, fullCalculated, cached);
 
         async Task<ScanResult> PersistAndCompleteAsync(bool wasCancelled, CancellationToken token)
         {
@@ -118,6 +167,29 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
             await database.CompleteScanAsync(scanId, result, token);
             return result;
         }
+    }
+
+    private async Task<List<FileRecord>> AddIdentitiesToDuplicateCandidatesAsync(List<FileRecord> records, CancellationToken cancellationToken)
+    {
+        var result = new List<FileRecord>(records.Count);
+        foreach (var group in records.Where(r => r.FullHash is not null).GroupBy(r => new { r.Length, r.FullHash }))
+        {
+            var shouldInspectIdentity = group.Count() > 1;
+            foreach (var record in group)
+            {
+                if (!shouldInspectIdentity)
+                {
+                    result.Add(record);
+                    continue;
+                }
+
+                var identity = await TryIdentityAsync(record.FullPath, cancellationToken);
+                result.Add(identity is null
+                    ? record
+                    : record with { FileId = identity.StableId, NumberOfLinks = identity.NumberOfLinks });
+            }
+        }
+        return result;
     }
 
     private static IReadOnlyList<DuplicateGroup> BuildGroups(IEnumerable<FileRecord> records)

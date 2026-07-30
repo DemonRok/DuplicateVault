@@ -2,6 +2,7 @@ namespace DuplicateVault.Core;
 
 public enum ScanMode { Quick, Full, Strict }
 public enum HardLinkOperationStatus { Planned, Succeeded, Failed, RolledBack, RollbackFailed }
+public enum ScanRootState { Unknown, Partial, Complete }
 
 public sealed record AppPaths(string DataRoot)
 {
@@ -50,7 +51,11 @@ public sealed record ScanProgress(
     long IncludedFiles,
     long HashedFiles,
     string? CurrentPath,
-    string Message);
+    string Message,
+    double? Percent = null,
+    long PartialHashes = 0,
+    long FullHashes = 0,
+    long ReusedHashes = 0);
 
 public sealed record VolumeIdentity(
     string RootPath,
@@ -115,6 +120,8 @@ public sealed record ScanResult(
     long ReclaimableBytes,
     long ErrorCount,
     bool WasCancelled);
+
+public sealed record ScanRootStatus(string RootPath, ScanRootState State, DateTime? LastScanUtc, long IncludedFiles);
 
 public sealed record HardLinkOptions(bool StrictByteVerification = false, bool DryRun = false, bool SimulateFailureAfterRename = false);
 public sealed record HardLinkValidationResult(bool IsEligible, string Reason, FileIdentity? MasterIdentity = null, FileIdentity? DuplicateIdentity = null);
