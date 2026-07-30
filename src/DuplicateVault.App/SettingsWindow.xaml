@@ -1,0 +1,75 @@
+<Window x:Class="DuplicateVault.App.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Configurazione scansione" Height="560" Width="620" MinHeight="520" MinWidth="580"
+        WindowStartupLocation="CenterOwner" Background="#F4F7FB" FontFamily="Segoe UI">
+  <Window.Resources>
+    <SolidColorBrush x:Key="Ink" Color="#122033" />
+    <SolidColorBrush x:Key="Muted" Color="#64748B" />
+    <SolidColorBrush x:Key="Line" Color="#D8E0EA" />
+    <Style TargetType="RadioButton">
+      <Setter Property="Margin" Value="0,8,0,0" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="{StaticResource Ink}" />
+    </Style>
+    <Style TargetType="Button">
+      <Setter Property="MinHeight" Value="36" />
+      <Setter Property="Padding" Value="14,7" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Background" Value="#E7EEF6" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+  </Window.Resources>
+
+  <Grid Margin="24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <StackPanel>
+      <TextBlock Text="Configurazione scansione" FontSize="24" FontWeight="SemiBold" Foreground="{StaticResource Ink}" />
+      <TextBlock Text="Queste opzioni valgono per le scansioni avviate dalla GUI." Foreground="{StaticResource Muted}" Margin="0,6,0,0" />
+    </StackPanel>
+
+    <ScrollViewer Grid.Row="1" Margin="0,22,0,22" VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+        <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16">
+          <StackPanel>
+            <TextBlock Text="Modalità" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource Ink}" />
+            <RadioButton x:Name="QuickMode" Content="Quick scan" GroupName="Mode" />
+            <TextBlock Text="Riusa gli hash validi già salvati nel database e ricalcola solo i file nuovi o modificati. È la scelta consigliata per l'uso normale." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="24,4,0,0" />
+            <RadioButton x:Name="FullMode" Content="Full scan" GroupName="Mode" />
+            <TextBlock Text="Ricalcola gli hash necessari per i candidati duplicati. È più lenta, ma utile quando vuoi ricontrollare una radice dopo molte modifiche." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="24,4,0,0" />
+            <RadioButton x:Name="StrictMode" Content="Strict scan" GroupName="Mode" />
+            <TextBlock Text="Usa le verifiche più prudenti disponibili. Durante la deduplicazione può confrontare i file byte per byte prima di creare hard link." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="24,4,0,0" />
+          </StackPanel>
+        </Border>
+
+        <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,14,0,0">
+          <StackPanel>
+            <TextBlock Text="Dimensione minima dei file" FontSize="16" FontWeight="SemiBold" Foreground="{StaticResource Ink}" />
+            <TextBlock Text="I file più piccoli di questa soglia vengono ignorati. Il valore predefinito è 1 MiB per evitare di perdere tempo su file minuscoli che recuperano poco spazio." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,5,0,10" />
+            <TextBox x:Name="MinimumSizeBox" MinHeight="34" Padding="10,6" BorderBrush="{StaticResource Line}" BorderThickness="1" />
+          </StackPanel>
+        </Border>
+
+        <Border Background="White" BorderBrush="{StaticResource Line}" BorderThickness="1" CornerRadius="8" Padding="16" Margin="0,14,0,0">
+          <StackPanel>
+            <CheckBox x:Name="RememberRootsBox" Content="Ricorda le radici di scansione alla riapertura" FontWeight="SemiBold" Foreground="{StaticResource Ink}" />
+            <TextBlock Text="Quando attivo, DuplicateVault salva nel file di configurazione della GUI le cartelle e i dischi aggiunti nella barra laterale." Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="24,5,0,0" />
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <DockPanel Grid.Row="2">
+      <TextBlock Text="Esempi validi: 512KiB, 1MiB, 2GiB." Foreground="{StaticResource Muted}" VerticalAlignment="Center" />
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button Content="Annulla" IsCancel="True" Margin="0,0,8,0" />
+        <Button Content="Salva" Click="Save_Click" Background="#00A9C8" Foreground="White" />
+      </StackPanel>
+    </DockPanel>
+  </Grid>
+</Window>

@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Directory.Build.props
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $version = dotnet run --project tools/DuplicateVault.BuildTools -- read-version
+          dotnet run --project tools/DuplicateVault.BuildTools -- validate-version
+          "value=$version" >> $env:GITHUB_OUTPUT
+      - name: Verify tag
+        shell: pwsh
+        run: |
+          if (git rev-parse "v${{ steps.version.outputs.value }}" 2>$null) { throw "Tag already exists." }
+      - name: Restore
+        run: dotnet restore DuplicateVault.slnx
+      - name: Build
+        run: dotnet build DuplicateVault.slnx -c Release --no-restore
+      - name: Test
+        run: dotnet test DuplicateVault.slnx -c Release --no-build
+      - name: Publish
+        run: dotnet publish src/DuplicateVault.App/DuplicateVault.App.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=None -p:DebugSymbols=false -o artifacts/package/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable
+      - name: Prepare package
+        shell: pwsh
+        run: |
+          $root = "artifacts/package/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable"
+          New-Item -ItemType Directory -Force "$root/conf","$root/db","$root/logs","$root/reports","$root/backups","$root/quarantine","$root/temp" | Out-Null
+          Copy-Item conf/appsettings.default.json "$root/conf/"
+          Copy-Item conf/exclusions.default.json "$root/conf/"
+          Copy-Item README.md "$root/"
+          Copy-Item LICENSE "$root/"
+          Compress-Archive -Path "$root" -DestinationPath "artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip"
+      - name: Validate package
+        run: dotnet run --project tools/DuplicateVault.BuildTools -- validate-package artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip
+      - name: Checksum
+        run: dotnet run --project tools/DuplicateVault.BuildTools -- checksum artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip
+      - name: Tag
+        run: git tag v${{ steps.version.outputs.value }} && git push origin v${{ steps.version.outputs.value }}
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.value }}
+          generate_release_notes: true
+          files: |
+            artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip
+            artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip.sha256

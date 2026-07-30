@@ -1,0 +1,28 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\DuplicateVault.Core\DuplicateVault.Core.csproj" />
+    <ProjectReference Include="..\DuplicateVault.Infrastructure\DuplicateVault.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\DuplicateVault.ico" />
+    <Resource Include="Assets\DuplicateVault.png" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>DuplicateVault</AssemblyName>
+    <ApplicationIcon>Assets\DuplicateVault.ico</ApplicationIcon>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+</Project>

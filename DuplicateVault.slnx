@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/DuplicateVault.App/DuplicateVault.App.csproj" />
+    <Project Path="src/DuplicateVault.Cli/DuplicateVault.Cli.csproj" />
+    <Project Path="src/DuplicateVault.Core/DuplicateVault.Core.csproj" />
+    <Project Path="src/DuplicateVault.Infrastructure/DuplicateVault.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/DuplicateVault.Core.Tests/DuplicateVault.Core.Tests.csproj" />
+    <Project Path="tests/DuplicateVault.Infrastructure.Tests/DuplicateVault.Infrastructure.Tests.csproj" />
+    <Project Path="tests/DuplicateVault.IntegrationTests/DuplicateVault.IntegrationTests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/DuplicateVault.BuildTools/DuplicateVault.BuildTools.csproj" />
+  </Folder>
+</Solution>

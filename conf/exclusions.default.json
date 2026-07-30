@@ -1,0 +1,24 @@
+{
+  "rules": [
+    {
+      "name": "Windows recycle bin",
+      "ruleType": "wildcard",
+      "pattern": "$RECYCLE.BIN",
+      "isEnabled": true,
+      "appliesToFiles": false,
+      "appliesToDirectories": true,
+      "isCaseSensitive": false,
+      "priority": 10
+    },
+    {
+      "name": "System volume information",
+      "ruleType": "wildcard",
+      "pattern": "System Volume Information",
+      "isEnabled": true,
+      "appliesToFiles": false,
+      "appliesToDirectories": true,
+      "isCaseSensitive": false,
+      "priority": 20
+    }
+  ]
+}

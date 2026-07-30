@@ -1,0 +1,17 @@
+<Project>
+  <PropertyGroup>
+    <Product>DuplicateVault</Product>
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionBuild>1</VersionBuild>
+    <Version>$(VersionPrefix).$(VersionBuild)</Version>
+    <FileVersion>$(VersionPrefix).$(VersionBuild)</FileVersion>
+    <AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>
+    <InformationalVersion>$(Version)</InformationalVersion>
+    <Authors>Mauro Bettinelli</Authors>
+    <Company></Company>
+    <Copyright>Copyright © Mauro Bettinelli</Copyright>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>

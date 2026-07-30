@@ -1,0 +1,38 @@
+name: Version bump
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    if: ${{ !contains(github.event.head_commit.message, '[skip version bump]') }}
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Increment version
+        id: version
+        shell: pwsh
+        run: |
+          dotnet run --project tools/DuplicateVault.BuildTools -- increment-version
+          $version = dotnet run --project tools/DuplicateVault.BuildTools -- read-version
+          "version=$version" >> $env:GITHUB_OUTPUT
+      - name: Validate version
+        run: dotnet run --project tools/DuplicateVault.BuildTools -- validate-version
+      - name: Commit version file
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Directory.Build.props
+          git commit -m "build(version): bump to ${{ steps.version.outputs.version }} [skip version bump]"
+          git push
