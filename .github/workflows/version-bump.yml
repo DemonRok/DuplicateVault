@@ -1,16 +1,14 @@
-name: Version bump
+name: Manual Version Bump
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   bump:
-    if: ${{ !contains(github.event.head_commit.message, '[skip version bump]') }}
+    name: Increment Directory.Build.props version
     runs-on: windows-latest
     steps:
       - name: Checkout

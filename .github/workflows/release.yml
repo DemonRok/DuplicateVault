@@ -1,17 +1,16 @@
-name: Release
+name: Release Tagged Windows Build
 
 on:
   push:
-    branches:
-      - main
-    paths:
-      - Directory.Build.props
+    tags:
+      - 'v*.*.*.*'
 
 permissions:
   contents: write
 
 jobs:
   release:
+    name: Build and publish Windows portable release
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -28,11 +27,9 @@ jobs:
         run: |
           $version = dotnet run --project tools/DuplicateVault.BuildTools -- read-version
           dotnet run --project tools/DuplicateVault.BuildTools -- validate-version
+          $tagVersion = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          if ($version -ne $tagVersion) { throw "Tag version $tagVersion does not match Directory.Build.props version $version." }
           "value=$version" >> $env:GITHUB_OUTPUT
-      - name: Verify tag
-        shell: pwsh
-        run: |
-          if (git rev-parse "v${{ steps.version.outputs.value }}" 2>$null) { throw "Tag already exists." }
       - name: Restore
         run: dotnet restore DuplicateVault.slnx
       - name: Build
@@ -55,8 +52,6 @@ jobs:
         run: dotnet run --project tools/DuplicateVault.BuildTools -- validate-package artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip
       - name: Checksum
         run: dotnet run --project tools/DuplicateVault.BuildTools -- checksum artifacts/DuplicateVault-${{ steps.version.outputs.value }}-win-x64-portable.zip
-      - name: Tag
-        run: git tag v${{ steps.version.outputs.value }} && git push origin v${{ steps.version.outputs.value }}
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
