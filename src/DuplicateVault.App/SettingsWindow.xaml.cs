@@ -5,14 +5,18 @@ namespace DuplicateVault.App;
 
 public partial class SettingsWindow : Window
 {
-    public SettingsWindow(GuiSettings settings)
+    private readonly Func<Task>? _resetCurrentRootsAsync;
+
+    public SettingsWindow(GuiSettings settings, Func<Task>? resetCurrentRootsAsync = null)
     {
         InitializeComponent();
+        _resetCurrentRootsAsync = resetCurrentRootsAsync;
         QuickMode.IsChecked = string.Equals(settings.ScanMode, "Quick", StringComparison.OrdinalIgnoreCase);
         FullMode.IsChecked = string.Equals(settings.ScanMode, "Full", StringComparison.OrdinalIgnoreCase);
         StrictMode.IsChecked = string.Equals(settings.ScanMode, "Strict", StringComparison.OrdinalIgnoreCase);
         MinimumSizeBox.Text = settings.MinimumSizeText;
         RememberRootsBox.IsChecked = settings.RememberScanRoots;
+        ResetCurrentRootsButton.IsEnabled = _resetCurrentRootsAsync is not null;
     }
 
     public GuiSettings Settings { get; private set; } = new();
@@ -36,5 +40,26 @@ public partial class SettingsWindow : Window
             RememberScanRoots = RememberRootsBox.IsChecked == true
         };
         DialogResult = true;
+    }
+
+    private async void ResetCurrentRoots_Click(object sender, RoutedEventArgs e)
+    {
+        if (_resetCurrentRootsAsync is null) return;
+        var answer = MessageBox.Show(
+            "Vuoi azzerare i dati salvati nel database per le radici attualmente presenti nella barra laterale?",
+            "DuplicateVault",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.Yes) return;
+
+        ResetCurrentRootsButton.IsEnabled = false;
+        try
+        {
+            await _resetCurrentRootsAsync();
+        }
+        finally
+        {
+            ResetCurrentRootsButton.IsEnabled = true;
+        }
     }
 }

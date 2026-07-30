@@ -38,6 +38,7 @@ public interface IDuplicateVaultDatabase
     Task<ScanRootStatus> GetScanRootStatusAsync(string rootPath, CancellationToken cancellationToken);
     Task<IReadOnlyList<ScanRootStatus>> GetScanRootStatusesAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken);
     Task<IReadOnlyList<DuplicateGroup>> GetSavedDuplicateGroupsAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken);
+    Task<int> ClearScanDataForRootsAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken);
     Task RecordHardLinkOperationAsync(long scanId, string masterPath, string duplicatePath, HardLinkOperationResult result, CancellationToken cancellationToken);
     Task<IReadOnlyList<HardLinkPlanItem>> GetLatestPlanAsync(CancellationToken cancellationToken);
     string DatabasePath { get; }
@@ -106,11 +107,24 @@ public static class Hashing
     public const string Algorithm = "SHA-256";
     private const int BlockSize = 64 * 1024;
 
-    public static async Task<string> ComputeFullHashAsync(string path, CancellationToken cancellationToken)
+    public static async Task<string> ComputeFullHashAsync(string path, CancellationToken cancellationToken, Action<long, long>? progress = null)
     {
-        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 128, FileOptions.SequentialScan);
-        var hash = await SHA256.HashDataAsync(stream, cancellationToken);
-        return Convert.ToHexString(hash);
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 1024, FileOptions.SequentialScan);
+        using var sha = SHA256.Create();
+        var buffer = new byte[1024 * 1024];
+        var total = stream.Length;
+        var readTotal = 0L;
+        while (true)
+        {
+            var read = await stream.ReadAsync(buffer, cancellationToken);
+            if (read == 0) break;
+            sha.TransformBlock(buffer, 0, read, null, 0);
+            readTotal += read;
+            progress?.Invoke(readTotal, total);
+        }
+
+        sha.TransformFinalBlock([], 0, 0);
+        return Convert.ToHexString(sha.Hash!);
     }
 
     public static async Task<string> ComputePartialHashAsync(string path, long length, CancellationToken cancellationToken)

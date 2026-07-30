@@ -122,7 +122,7 @@
                   <ColumnDefinition Width="34" />
                   <ColumnDefinition Width="*" />
                 </Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding Symbol}" Foreground="#7DD3FC" FontWeight="SemiBold" VerticalAlignment="Center" />
+                <TextBlock Text="{Binding Symbol}" Foreground="{Binding SymbolBrush}" FontWeight="SemiBold" VerticalAlignment="Center" />
                 <StackPanel Grid.Column="1">
                   <TextBlock Text="{Binding Path}" TextTrimming="CharacterEllipsis" Foreground="#E6F0FA" />
                   <TextBlock Text="{Binding StatusText}" TextTrimming="CharacterEllipsis" Foreground="#9FB4C9" FontSize="11" />

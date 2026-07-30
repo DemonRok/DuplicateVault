@@ -136,7 +136,10 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                     try
                     {
                         ReportProgress("Hashing", record.FullPath, completedWork, totalWork);
-                        var full = await Hashing.ComputeFullHashAsync(record.FullPath, token);
+                        var full = await Hashing.ComputeFullHashAsync(record.FullPath, token, (read, length) =>
+                        {
+                            ReportProgress("Hashing", $"{record.FullPath} ({FormatBytes(read)} / {FormatBytes(length)})", completedWork, totalWork);
+                        });
                         fullCalculated++;
                         withFull.Add(record with { FullHash = full });
                         fullPaths.Add(record.FullPath);
@@ -152,8 +155,7 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                 }
             }
 
-            ReportProgress("InspectingFileIdentity", null, totalWork, totalWork);
-            withFull = await AddIdentitiesToDuplicateCandidatesAsync(withFull, token);
+            withFull = await AddIdentitiesToDuplicateCandidatesAsync(withFull, progress, token);
         }
 
         void ReportProgress(string message, string? path, int completedWork, int totalWork)
@@ -167,9 +169,13 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
 
         async Task<ScanResult> PersistAndCompleteAsync(bool wasCancelled, CancellationToken token)
         {
+            progress?.Report(Progress("Scrittura metadati file", "Persisting", 0));
             if (records.Count > 0) await database.UpsertFilesAsync(records, token);
+            progress?.Report(Progress("Scrittura hash parziali", "Persisting", 35));
             if (withPartial.Count > 0) await database.UpsertFilesAsync(withPartial, token);
+            progress?.Report(Progress("Scrittura hash completi", "Persisting", 70));
             if (withFull.Count > 0) await database.UpsertFilesAsync(withFull, token);
+            progress?.Report(Progress("Finalizzazione gruppi duplicati", "Persisting", 90));
 
             var duplicateGroups = BuildGroups(withFull);
             var result = new ScanResult(scanId, duplicateGroups, total, included, partialCalculated, fullCalculated, cached, duplicateGroups.Sum(g => g.Files.Count(f => f.IsExistingHardLink)), duplicateGroups.Sum(g => g.ReclaimableBytes), errors, wasCancelled);
@@ -178,9 +184,17 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
         }
     }
 
-    private async Task<List<FileRecord>> AddIdentitiesToDuplicateCandidatesAsync(List<FileRecord> records, CancellationToken cancellationToken)
+    private async Task<List<FileRecord>> AddIdentitiesToDuplicateCandidatesAsync(List<FileRecord> records, IProgress<ScanProgress>? progress, CancellationToken cancellationToken)
     {
         var result = new List<FileRecord>(records.Count);
+        var duplicateCandidates = records
+            .Where(r => r.FullHash is not null)
+            .GroupBy(r => new { r.Length, r.FullHash })
+            .Where(g => g.Count() > 1)
+            .SelectMany(g => g)
+            .ToHashSet();
+        var inspected = 0;
+        var total = Math.Max(1, duplicateCandidates.Count);
         foreach (var group in records.Where(r => r.FullHash is not null).GroupBy(r => new { r.Length, r.FullHash }))
         {
             var shouldInspectIdentity = group.Count() > 1;
@@ -192,13 +206,30 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                     continue;
                 }
 
+                progress?.Report(new ScanProgress(0, 0, 0, $"{record.FullPath} ({inspected:N0}/{total:N0})", "InspectingFileIdentity", Math.Clamp(inspected * 100.0 / total, 0, 100)));
                 var identity = await TryIdentityAsync(record.FullPath, cancellationToken);
+                inspected++;
                 result.Add(identity is null
                     ? record
                     : record with { FileId = identity.StableId, NumberOfLinks = identity.NumberOfLinks });
+                progress?.Report(new ScanProgress(0, 0, 0, $"{record.FullPath} ({inspected:N0}/{total:N0})", "InspectingFileIdentity", Math.Clamp(inspected * 100.0 / total, 0, 100)));
             }
         }
         return result;
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        string[] units = ["byte", "KiB", "MiB", "GiB", "TiB"];
+        var value = (double)bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+
+        return unit == 0 ? $"{bytes:N0} {units[unit]}" : $"{value:N1} {units[unit]}";
     }
 
     private static IReadOnlyList<DuplicateGroup> BuildGroups(IEnumerable<FileRecord> records)

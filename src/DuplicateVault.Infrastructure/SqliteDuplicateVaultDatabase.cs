@@ -176,6 +176,36 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         return BuildGroups(records);
     }
 
+    public async Task<int> ClearScanDataForRootsAsync(IEnumerable<string> rootPaths, CancellationToken cancellationToken)
+    {
+        var roots = rootPaths
+            .Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(Path.GetFullPath)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (roots.Length == 0) return 0;
+
+        var affected = 0;
+        await using var connection = Open();
+        await using var tx = await connection.BeginTransactionAsync(cancellationToken);
+        foreach (var root in roots)
+        {
+            var prefix = root.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            affected += await ExecuteDeleteAsync(connection, (SqliteTransaction)tx,
+                "DELETE FROM HardLinkOperation WHERE MasterPath=$root OR MasterPath LIKE $prefix OR DuplicatePath=$root OR DuplicatePath LIKE $prefix;",
+                root, prefix, cancellationToken);
+            affected += await ExecuteDeleteAsync(connection, (SqliteTransaction)tx,
+                "DELETE FROM FileRecord WHERE FullPath=$root OR FullPath LIKE $prefix;",
+                root, prefix, cancellationToken);
+            affected += await ExecuteDeleteAsync(connection, (SqliteTransaction)tx,
+                "DELETE FROM ScanRootStatus WHERE RootPath=$root;",
+                root, prefix, cancellationToken);
+        }
+
+        await tx.CommitAsync(cancellationToken);
+        return affected;
+    }
+
     public async Task RecordHardLinkOperationAsync(long scanId, string masterPath, string duplicatePath, HardLinkOperationResult result, CancellationToken cancellationToken)
     {
         await using var connection = Open();
@@ -229,6 +259,16 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         await using var command = connection.CreateCommand();
         command.CommandText = sql;
         await command.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static async Task<int> ExecuteDeleteAsync(SqliteConnection connection, SqliteTransaction tx, string sql, string root, string prefix, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.Transaction = tx;
+        command.CommandText = sql;
+        command.Parameters.AddWithValue("$root", root);
+        command.Parameters.AddWithValue("$prefix", prefix + "%");
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     private static async Task UpsertRootStatusAsync(SqliteConnection connection, string rootPath, ScanResult result, CancellationToken cancellationToken)

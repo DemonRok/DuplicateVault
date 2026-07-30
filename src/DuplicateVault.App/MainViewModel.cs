@@ -46,6 +46,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private bool _isScanning;
     private bool _isCancellationRequested;
     private bool _isHardLinkOperationRunning;
+    private bool _isLoadingSavedGroups;
 
     public MainViewModel(IFileScanner scanner, IHardLinkService hardLinks, AppPaths paths, GuiSettingsStore settingsStore, IDuplicateVaultDatabase database)
     {
@@ -85,7 +86,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public ScanRootItem? SelectedRoot
     {
         get => _selectedRoot;
-        set { _selectedRoot = value; OnPropertyChanged(); RefreshCommands(); }
+        set
+        {
+            _selectedRoot = value;
+            OnPropertyChanged();
+            RefreshCommands();
+            _ = RefreshGroupsForSelectedRootAsync();
+        }
     }
     public string SelectedMode { get; set; } = "Quick";
     public string MinimumSizeText { get; set; } = "1MiB";
@@ -119,7 +126,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         set { _isHardLinkOperationRunning = value; OnPropertyChanged(); RefreshCommands(); }
     }
 
-    public bool CanRunHardLinkOperation => !IsScanning && !IsHardLinkOperationRunning && BuildAutomaticPlan().Items.Count > 0;
+    public bool CanRunHardLinkOperation => !IsScanning && !IsHardLinkOperationRunning && !IsLoadingSavedGroups && HasPotentialHardLinkWork();
+
+    public bool IsLoadingSavedGroups
+    {
+        get => _isLoadingSavedGroups;
+        set { _isLoadingSavedGroups = value; OnPropertyChanged(); RefreshCommands(); }
+    }
 
     public DuplicateGroup? SelectedGroup
     {
@@ -241,7 +254,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private void OpenSettings()
     {
-        var dialog = new SettingsWindow(_settings)
+        var dialog = new SettingsWindow(_settings, ResetCurrentRootDataAsync)
         {
             Owner = Application.Current.MainWindow
         };
@@ -257,6 +270,58 @@ public sealed class MainViewModel : INotifyPropertyChanged
         OnPropertyChanged(nameof(MinimumSizeText));
         SaveSettings();
         Status = "Configurazione salvata.";
+    }
+
+    private async Task ResetCurrentRootDataAsync()
+    {
+        if (IsScanning || IsHardLinkOperationRunning)
+        {
+            Status = "Completa l'operazione in corso prima di azzerare i dati.";
+            return;
+        }
+
+        var roots = Roots.Select(r => r.Path).ToArray();
+        if (roots.Length == 0)
+        {
+            Status = "Nessuna radice presente da azzerare.";
+            return;
+        }
+
+        IsLoadingSavedGroups = true;
+        Status = "Azzeramento dati salvati...";
+        UpdateMainProgress(new ScanProgress(0, 0, 0, string.Join("; ", roots), "LoadingSavedGroups", 0), "Azzeramento dati salvati");
+        try
+        {
+            var deleted = await Task.Run(() => _database.ClearScanDataForRootsAsync(roots, CancellationToken.None));
+            DuplicateGroups.Clear();
+            SelectedGroup = null;
+            GroupCountText = "0";
+            ReclaimableText = "0 byte";
+            IncludedFilesText = "0";
+            Summary = $"Dati azzerati per {roots.Length:N0} radici. Righe eliminate: {deleted:N0}.";
+            foreach (var root in Roots)
+            {
+                root.Apply(new ScanRootStatus(root.Path, ScanRootState.Unknown, null, 0));
+            }
+
+            ProgressActivity = "Database locale azzerato";
+            ProgressPath = string.Join("; ", roots);
+            ProgressCounters = $"{deleted:N0} righe eliminate";
+            IsProgressIndeterminate = false;
+            ProgressPercent = 100;
+            ProgressPercentText = "100%";
+            Status = "Dati salvati azzerati per le radici presenti.";
+        }
+        catch (Exception ex)
+        {
+            Status = "Impossibile azzerare i dati salvati.";
+            MessageBox.Show(ex.Message, "DuplicateVault", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            IsLoadingSavedGroups = false;
+            RefreshCommands();
+        }
     }
 
     private async void BeginStartScan(bool ignoreCache)
@@ -283,15 +348,33 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
         try
         {
+            var activeRoots = GetActiveRootPaths();
+            var availableRoots = await CheckActiveRootsAvailableAsync(activeRoots);
+            if (availableRoots.Count == 0)
+            {
+                Status = "Nessuna radice selezionata e raggiungibile.";
+                ProgressActivity = "Radici non raggiungibili";
+                ProgressPath = string.Join("; ", activeRoots);
+                ProgressCounters = "0 radici disponibili";
+                IsProgressIndeterminate = false;
+                ProgressPercent = 100;
+                ProgressPercentText = "100%";
+                IsScanning = false;
+                IsCancellationRequested = false;
+                _scanCts?.Dispose();
+                _scanCts = null;
+                return;
+            }
+
             if (ignoreCache)
             {
                 DuplicateGroups.Clear();
-                await StartScanAsync(GetActiveRootPaths(), ignoreCache);
+                await StartScanAsync(availableRoots, ignoreCache);
                 return;
             }
 
             await LoadSavedDuplicateGroupsAsync(savedRoots);
-            var scanRoots = await GetRootsNeedingScanAsync();
+            var scanRoots = await GetRootsNeedingScanAsync(availableRoots);
             if (scanRoots.Count == 0)
             {
                 Status = "Risultati salvati caricati. Usa Scansione pulita per ricontrollare i file.";
@@ -396,23 +479,59 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task LoadSavedDuplicateGroupsAsync(IReadOnlyList<string> roots)
     {
+        if (IsLoadingSavedGroups) return;
+        IsLoadingSavedGroups = true;
         Status = "Caricamento gruppi duplicati salvati...";
         UpdateMainProgress(new ScanProgress(0, 0, 0, "Lettura database locale", "LoadingSavedGroups"), "Caricamento gruppi salvati");
-        var savedGroups = await Task.Run(() => _database.GetSavedDuplicateGroupsAsync(roots, CancellationToken.None));
-        savedGroups = await ReconcileAvailableHardLinksAsync(savedGroups);
-        DuplicateGroups.Clear();
-        foreach (var group in savedGroups) DuplicateGroups.Add(group);
+        try
+        {
+            var savedGroups = await Task.Run(async () =>
+            {
+                var groups = await _database.GetSavedDuplicateGroupsAsync(roots, CancellationToken.None);
+                return await ReconcileAvailableHardLinksAsync(groups);
+            });
 
-        var reclaimable = savedGroups.Sum(g => g.ReclaimableBytes);
-        var plan = BuildAutomaticPlan();
-        GroupCountText = savedGroups.Count.ToString("N0");
-        ReclaimableText = FormatBytes(reclaimable);
-        Summary = savedGroups.Count == 0
-            ? "Nessun gruppo duplicato salvato per le radici selezionate."
-            : plan.Items.Count == 0 && plan.UnavailableFiles > 0
-                ? $"Gruppi salvati: {savedGroups.Count:N0}. I file salvati non sono raggiungibili ora ({plan.UnavailableFiles:N0} file)."
+            DuplicateGroups.Clear();
+            foreach (var group in savedGroups) DuplicateGroups.Add(group);
+
+            var reclaimable = savedGroups.Sum(g => g.ReclaimableBytes);
+            GroupCountText = savedGroups.Count.ToString("N0");
+            ReclaimableText = FormatBytes(reclaimable);
+            Summary = savedGroups.Count == 0
+                ? "Nessun gruppo duplicato salvato per le radici selezionate."
                 : $"Gruppi salvati: {savedGroups.Count:N0}. Recuperabile: {reclaimable:N0} byte.";
+            if (!IsScanning)
+            {
+                ProgressActivity = "Risultati salvati";
+                ProgressPath = roots.Count == 0 ? "-" : string.Join("; ", roots);
+                ProgressCounters = $"{savedGroups.Count:N0} gruppi caricati";
+                IsProgressIndeterminate = false;
+                ProgressPercent = 100;
+                ProgressPercentText = "100%";
+            }
+        }
+        finally
+        {
+            IsLoadingSavedGroups = false;
+        }
         RefreshCommands();
+    }
+
+    private async Task RefreshGroupsForSelectedRootAsync()
+    {
+        if (IsScanning || IsHardLinkOperationRunning || Roots.Count == 0) return;
+        try
+        {
+            await LoadSavedDuplicateGroupsAsync(GetActiveRootPaths());
+            Status = SelectedRoot is null
+                ? "Gruppi salvati caricati per tutte le radici."
+                : "Gruppi salvati caricati per la radice selezionata.";
+        }
+        catch (Exception ex)
+        {
+            Status = "Impossibile caricare i gruppi salvati.";
+            MessageBox.Show(ex.Message, "DuplicateVault", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     private async Task<IReadOnlyList<DuplicateGroup>> ReconcileAvailableHardLinksAsync(IReadOnlyList<DuplicateGroup> groups)
@@ -492,14 +611,66 @@ public sealed class MainViewModel : INotifyPropertyChanged
         return name.EndsWith(")", StringComparison.Ordinal) && name.LastIndexOf(" (", StringComparison.Ordinal) >= 0;
     }
 
-    private async Task<IReadOnlyList<string>> GetRootsNeedingScanAsync()
+    private async Task<IReadOnlyList<string>> GetRootsNeedingScanAsync(IReadOnlyList<string> roots)
     {
-        var selected = GetActiveRootPaths();
-        var statuses = await _database.GetScanRootStatusesAsync(selected, CancellationToken.None);
+        var statuses = await _database.GetScanRootStatusesAsync(roots, CancellationToken.None);
         return statuses
             .Where(s => s.State != ScanRootState.Complete)
             .Select(s => s.RootPath)
             .ToArray();
+    }
+
+    private async Task<IReadOnlyList<string>> CheckActiveRootsAvailableAsync(IReadOnlyList<string> roots)
+    {
+        Status = "Verifica disponibilita radici...";
+        ProgressActivity = "Verifica radici";
+        ProgressCounters = $"0/{roots.Count:N0} verificate";
+        IsProgressIndeterminate = false;
+        ProgressPercent = 0;
+        ProgressPercentText = roots.Count == 0 ? "100%" : "0%";
+
+        var results = await Task.Run(() => roots
+            .Select(root =>
+            {
+                try
+                {
+                    return (Root: root, Available: Directory.Exists(root));
+                }
+                catch
+                {
+                    return (Root: root, Available: false);
+                }
+            })
+            .ToArray());
+
+        var available = new List<string>();
+        for (var i = 0; i < results.Length; i++)
+        {
+            var result = results[i];
+            var item = Roots.FirstOrDefault(r => string.Equals(r.Path, result.Root, StringComparison.OrdinalIgnoreCase));
+            if (result.Available)
+            {
+                item?.SetUnavailable(false);
+                available.Add(result.Root);
+            }
+            else
+            {
+                item?.SetUnavailable(true);
+            }
+
+            ProgressPath = result.Root;
+            ProgressCounters = $"{i + 1:N0}/{results.Length:N0} verificate, {available.Count:N0} disponibili";
+            ProgressPercent = results.Length == 0 ? 100 : Math.Clamp((i + 1) * 100.0 / results.Length, 0, 100);
+            ProgressPercentText = $"{ProgressPercent:N0}%";
+        }
+
+        var unavailableCount = results.Count(r => !r.Available);
+        if (unavailableCount > 0)
+        {
+            Status = $"{unavailableCount:N0} radici non raggiungibili escluse dalla scansione.";
+        }
+
+        return available;
     }
 
     private IReadOnlyList<string> GetActiveRootPaths()
@@ -510,15 +681,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     private async Task ReplaceAllAsync(bool dryRun)
     {
-        var plan = BuildAutomaticPlan();
-        if (plan.Items.Count == 0)
-        {
-            Status = plan.UnavailableFiles > 0
-                ? $"Nessun duplicato applicabile: {plan.UnavailableFiles:N0} file salvati non sono raggiungibili ora."
-                : "Nessun duplicato applicabile.";
-            return;
-        }
-
         IsHardLinkOperationRunning = true;
         var succeeded = 0;
         var failed = 0;
@@ -530,11 +692,23 @@ public sealed class MainViewModel : INotifyPropertyChanged
             .GroupBy(r => r.FullPath, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
         var verb = dryRun ? "Dry run" : "Creazione hard link";
-        Status = $"{verb}: 0/{plan.Items.Count} file.";
+        Status = $"{verb}: preparazione piano...";
         UpdateMainProgress(new ScanProgress(0, 0, 0, "Preparazione operazione hard link", "HardLinking", 0), verb);
 
         try
         {
+            var groupSnapshot = DuplicateGroups.ToArray();
+            var plan = await Task.Run(() => BuildAutomaticPlan(groupSnapshot));
+            if (plan.Items.Count == 0)
+            {
+                Status = plan.UnavailableFiles > 0
+                    ? $"Nessun duplicato applicabile: {plan.UnavailableFiles:N0} file salvati non sono raggiungibili ora."
+                    : "Nessun duplicato applicabile.";
+                ProgressPercent = 100;
+                ProgressPercentText = "100%";
+                return;
+            }
+
             IProgress<HardLinkBatchProgress> progress = new Progress<HardLinkBatchProgress>(p =>
             {
                 Status = $"{verb}: {p.Processed:N0}/{p.Total:N0} file.";
@@ -589,11 +763,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    private AutomaticPlan BuildAutomaticPlan()
+    private AutomaticPlan BuildAutomaticPlan(IReadOnlyList<DuplicateGroup>? groups = null)
     {
         var plan = new List<HardLinkPlanItem>();
         var unavailableFiles = 0;
-        foreach (var group in DuplicateGroups)
+        foreach (var group in groups ?? DuplicateGroups)
         {
             var master = GetMasterPath(group);
             if (master is null) continue;
@@ -623,6 +797,17 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
 
         return new AutomaticPlan(plan, unavailableFiles);
+    }
+
+    private bool HasPotentialHardLinkWork()
+    {
+        return DuplicateGroups.Any(group =>
+        {
+            var master = GetMasterPath(group);
+            return master is not null && group.Files.Any(file =>
+                !file.IsExistingHardLink &&
+                !string.Equals(master, file.Record.FullPath, StringComparison.OrdinalIgnoreCase));
+        });
     }
 
     private async Task UpdateLinkedFileRecordsAsync(string masterPath, string duplicatePath, IReadOnlyDictionary<string, FileRecord> recordsByPath, CancellationToken cancellationToken)
@@ -810,19 +995,24 @@ public sealed class ScanRootItem(string path) : INotifyPropertyChanged
     private ScanRootState _state = ScanRootState.Unknown;
     private DateTime? _lastScanUtc;
     private long _includedFiles;
+    private bool _isUnavailable;
 
     public event PropertyChangedEventHandler? PropertyChanged;
     public string Path { get; } = path;
 
     public string Symbol => _state switch
     {
+        _ when _isUnavailable => "KO",
         ScanRootState.Complete => "[OK]",
         ScanRootState.Partial => "[~]",
         _ => "[ ]"
     };
 
+    public string SymbolBrush => _isUnavailable ? "#EF4444" : "#7DD3FC";
+
     public string StatusText => _state switch
     {
+        _ when _isUnavailable => "Cartella non raggiungibile",
         ScanRootState.Complete => $"Scansione completa, {_includedFiles:N0} file inclusi",
         ScanRootState.Partial => $"Scansione parziale, {_includedFiles:N0} file inclusi",
         _ => "Mai scansionata"
@@ -836,8 +1026,18 @@ public sealed class ScanRootItem(string path) : INotifyPropertyChanged
         _lastScanUtc = status.LastScanUtc;
         _includedFiles = status.IncludedFiles;
         OnPropertyChanged(nameof(Symbol));
+        OnPropertyChanged(nameof(SymbolBrush));
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(LastScanText));
+    }
+
+    public void SetUnavailable(bool isUnavailable)
+    {
+        if (_isUnavailable == isUnavailable) return;
+        _isUnavailable = isUnavailable;
+        OnPropertyChanged(nameof(Symbol));
+        OnPropertyChanged(nameof(SymbolBrush));
+        OnPropertyChanged(nameof(StatusText));
     }
 
     private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
