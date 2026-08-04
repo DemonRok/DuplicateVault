@@ -2,7 +2,7 @@
   <PropertyGroup>
     <Product>DuplicateVault</Product>
     <VersionPrefix>0.1.0</VersionPrefix>
-    <VersionBuild>5</VersionBuild>
+    <VersionBuild>6</VersionBuild>
     <Version>$(VersionPrefix).$(VersionBuild)</Version>
     <FileVersion>$(VersionPrefix).$(VersionBuild)</FileVersion>
     <AssemblyVersion>$(VersionPrefix).0</AssemblyVersion>

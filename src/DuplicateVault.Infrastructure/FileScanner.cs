@@ -19,9 +19,11 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
         var records = new List<FileRecord>();
         var withPartial = new List<FileRecord>();
         var withFull = new List<FileRecord>();
+        var canReuseHashes = false;
 
         try
         {
+            canReuseHashes = request.Mode == ScanMode.Quick && await database.HasReusableHashesAsync(cancellationToken);
             foreach (var root in request.Roots.Select(Path.GetFullPath))
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -49,9 +51,6 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                     records.Add(Metadata(root, info, scanId, null, null, null, 1, null));
                 }
             }
-
-            progress?.Report(Progress(null, "Persisting"));
-            await database.UpsertFilesAsync(records, cancellationToken);
 
             await CompleteDuplicateDetectionAsync(cancellationToken);
             var result = await PersistAndCompleteAsync(false, cancellationToken);
@@ -84,7 +83,7 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                     token.ThrowIfCancellationRequested();
                     if (partialPaths.Contains(record.FullPath)) continue;
                     ReportProgress("ReusingPartialHash", record.FullPath, completedWork, totalWork);
-                    var reusable = request.Mode == ScanMode.Quick ? await database.FindReusableHashAsync(record, token) : null;
+                    var reusable = canReuseHashes ? await database.FindReusableHashAsync(record, token) : null;
                     if (reusable?.PartialHash is not null)
                     {
                         cached++;
@@ -123,7 +122,7 @@ public sealed class FileScanner(IDuplicateVaultDatabase database, IHardLinkServi
                     token.ThrowIfCancellationRequested();
                     if (fullPaths.Contains(record.FullPath)) continue;
                     ReportProgress("ReusingFullHash", record.FullPath, completedWork, totalWork);
-                    var reusable = request.Mode == ScanMode.Quick ? await database.FindReusableHashAsync(record, token) : null;
+                    var reusable = canReuseHashes ? await database.FindReusableHashAsync(record, token) : null;
                     if (reusable?.FullHash is not null)
                     {
                         cached++;

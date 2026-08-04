@@ -32,6 +32,7 @@ public interface IDuplicateVaultDatabase
     Task InitializeAsync(CancellationToken cancellationToken);
     Task<long> StartScanAsync(ScanRequest request, CancellationToken cancellationToken);
     Task UpsertFilesAsync(IReadOnlyList<FileRecord> files, CancellationToken cancellationToken);
+    Task<bool> HasReusableHashesAsync(CancellationToken cancellationToken);
     Task<FileRecord?> FindReusableHashAsync(FileRecord metadata, CancellationToken cancellationToken);
     Task<IReadOnlyList<FileRecord>> GetDuplicateCandidatesAsync(long scanId, CancellationToken cancellationToken);
     Task CompleteScanAsync(long scanId, ScanResult result, CancellationToken cancellationToken);

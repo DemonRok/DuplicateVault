@@ -49,6 +49,14 @@ public sealed class SqliteDuplicateVaultDatabase(string databasePath) : IDuplica
         await tx.CommitAsync(cancellationToken);
     }
 
+    public async Task<bool> HasReusableHashesAsync(CancellationToken cancellationToken)
+    {
+        await using var connection = Open();
+        await using var command = connection.CreateCommand();
+        command.CommandText = "SELECT EXISTS(SELECT 1 FROM FileRecord WHERE PartialHash IS NOT NULL OR FullHash IS NOT NULL LIMIT 1);";
+        return Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken) ?? 0L) == 1;
+    }
+
     public async Task<FileRecord?> FindReusableHashAsync(FileRecord metadata, CancellationToken cancellationToken)
     {
         await using var connection = Open();
